@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 # NIAH single-needle long-context evaluation for a Hugging Face model (+ optional LoRA adapter).
 #
+# Edit the settings block below and run `scripts/run_eval.sh`. Command-line
+# options (see --help) override the block for a single run:
 #   scripts/run_eval.sh --model google/gemma-4-E4B-it --context_length 4 8 16
-#   scripts/run_eval.sh --adapter /path/to/lora --context_length all --tokenizer model --gpus 0,1
 #
 # Run scripts/setup.sh once per server before using this.
 set -euo pipefail
 
+# ========================= settings =========================
+MODEL="google/gemma-4-E4B-it"   # HF model id or local path. "" with ADAPTER: read from adapter_config.json
+ADAPTER=""                      # LoRA/PEFT adapter directory (absolute path). "" = evaluate the base model as-is
+CONTEXT=(all)                   # k tokens, e.g. (4 8 16) or (all) = 4 8 16 32 64 128
+TOKENIZER="gpt"                 # length measured in: gpt (NIAH default) | model (the model's own tokenizer)
+DEPTHS=(50)                     # needle depth percents, e.g. (0 25 50 75 100)
+GPUS=""                         # e.g. "0" or "0,1". "" = all visible GPUs
+MAX_NEW_TOKENS=128              # answer length limit
+DTYPE=bfloat16                  # bfloat16 | float16 | float32
+OUTPUT_DIR=""                   # "" = needle-in-a-haystack/results
+# ============================================================
+
 usage() {
   cat <<'EOF'
-Usage: run_eval.sh --model NAME [options]
+Usage: run_eval.sh [options]   (unset options use the settings block at the top of this file)
 
   --model NAME            HF model id or local path (optional with --adapter:
                           read from adapter_config.json base_model_name_or_path)
@@ -31,27 +44,29 @@ EOF
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NIAH_DIR=${NIAH_DIR:-$(dirname "$SCRIPT_DIR")/needle-in-a-haystack}
 
-MODEL="" ADAPTER="" TOKENIZER="gpt" CONTEXT=(all) DEPTHS=(50)
-MAX_NEW_TOKENS=128 DTYPE=bfloat16 GPUS="" OUTPUT_DIR="$NIAH_DIR/results" DRY_RUN=0
+DRY_RUN=0
 
 # Collect values until the next --flag, so `--context_length 4 8 16` works.
 take_list() { local -n _arr=$1; _arr=(); shift; while [[ $# -gt 0 && $1 != --* ]]; do _arr+=("$1"); shift; done; }
 while [[ $# -gt 0 ]]; do
   case $1 in
     --model) MODEL=$2; shift 2 ;;
-    --adapter) ADAPTER=$(realpath "$2"); shift 2 ;;
+    --adapter) ADAPTER=$2; shift 2 ;;
     --tokenizer) TOKENIZER=$2; shift 2 ;;
     --context_length|--context-length) shift; take_list CONTEXT "$@"; shift ${#CONTEXT[@]} ;;
     --depths) shift; take_list DEPTHS "$@"; shift ${#DEPTHS[@]} ;;
     --max_new_tokens|--max-new-tokens) MAX_NEW_TOKENS=$2; shift 2 ;;
     --dtype) DTYPE=$2; shift 2 ;;
     --gpus) GPUS=$2; shift 2 ;;
-    --output_dir|--output-dir) OUTPUT_DIR=$(realpath -m "$2"); shift 2 ;;
+    --output_dir|--output-dir) OUTPUT_DIR=$2; shift 2 ;;
     --dry_run|--dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+# Absolute paths, since the run happens from inside the NIAH clone.
+[[ -n $ADAPTER ]] && ADAPTER=$(realpath "$ADAPTER")
+OUTPUT_DIR=$(realpath -m "${OUTPUT_DIR:-$NIAH_DIR/results}")
 
 # 1. Activate the NIAH venv built by setup.sh.
 if [[ ! -x $NIAH_DIR/.venv/bin/python ]] || ! "$NIAH_DIR/.venv/bin/python" -c "import needlehaystack" 2>/dev/null; then
