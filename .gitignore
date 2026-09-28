@@ -1,0 +1,4 @@
+# NIAH upstream clone, created by scripts/setup.sh (includes .venv and results/)
+needle-in-a-haystack/
+__pycache__/
+*.pyc
